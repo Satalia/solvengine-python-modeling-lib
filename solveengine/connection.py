@@ -17,10 +17,13 @@ from .helper import _get_logger, unusual_answer, SERequests, build_err_msg, ObjR
 
 LOGGER = _get_logger()
 
+
 class BaseConnection():
-    def manage_solving(self, model):
+    def __init__(self, model, sleep_time):
         self.model = model
-        
+        self.sleep_time = sleep_time
+
+    def manage_solving(self):
         self._create_job()
         self._schedule_job()
         se_status = self._wait_results()
@@ -28,11 +31,14 @@ class BaseConnection():
 
         return self._id, se_status, result
 
+
 class GrpcConnection(BaseConnection):
-    def __init__(self, token):
+    def __init__(self, model, token, sleep_time):
         """initiate the connection class for grpc"""
+        super(GrpcConnection, self).__init__(model=model,
+                                             sleep_time=sleep_time)
         self._prepare_grpc()
-        self._grpc_metadata = [("authorization", "".join(["api-key ", token]))]
+        self.__grpc_metadata = [("authorization", "".join(["api-key ", token]))]
 
     def _prepare_grpc(self):
         """prepare objects needed for grpc"""
@@ -45,12 +51,15 @@ class GrpcConnection(BaseConnection):
         return the id of the 'job' created in the solve engine network
         """
         LOGGER.debug("Creating Solve Engine job...")
-        pb_data = self.model.get_file_str().encode('ascii')
+        pb_data = self.model.build_str_model().encode('ascii')
             
         pb = Problem(name=self.model.filename, data=pb_data)
 
         req = CreateJobRequest(problems=[pb], options={})
-        resp_obj = self._solve_engine.Create(req, metadata=self._grpc_metadata)
+        try:
+            resp_obj = self._solve_engine.Create(req, metadata=self.__grpc_metadata)
+        except grpc.RpcError as err:
+            raise grpc.RpcError(err.details())
 
         if unusual_answer(resp_obj, SERequests.CREATE_JOB):
             raise ValueError(build_err_msg(resp_obj))
@@ -62,39 +71,46 @@ class GrpcConnection(BaseConnection):
         """launch the resolution of the job just created"""
         LOGGER.debug("Scheduling Solve Engine job...")
 
-        self._solve_engine.Schedule(JobRequest(id=self._id),
-                                    metadata=self._grpc_metadata)
+        try:
+            self._solve_engine.Schedule(JobRequest(id=self._id),
+                                    metadata=self.__grpc_metadata)
+        except grpc.RpcError as err:
+            raise grpc.RpcError(err.details())
 
         LOGGER.debug("Job scheduled")
 
     def _wait_results(self):
-        """asks for the status of the solving untill it finishes"""
+        """asks for the status of the solving until it finishes"""
         sec_cnt = 0
         while True:
-            resp_obj = self._solve_engine.Status(JobRequest(id=self._id),
-                                                 metadata=self._grpc_metadata)
-            
+            try:
+                resp_obj = self._solve_engine.Status(JobRequest(id=self._id),
+                                                 metadata=self.__grpc_metadata)
+            except grpc.RpcError as err:
+                raise grpc.RpcError(err.details())
+
             if unusual_answer(resp_obj, SERequests.GET_STATUS):
                 raise ValueError(build_err_msg(resp_obj))
-            #todo CHECK
+
             se_status = resp_obj.status
             
             msg = "".join(["Solving the problem, status : ", se_status,
-                           " - waiting time : ", str(sec_cnt),"s"])
+                           " - waiting time : ", str(sec_cnt), "s"])
             LOGGER.debug(msg)
-            self.model.print_if_interactive("".join(["\r" * (len(msg) * 2), msg, " " * 20]))
+            self.model.print_if_interactive(msg)
             
             if se_status == SEStatusCode.COMPLETED:
                 break
             elif se_status == SEStatusCode.FAILED:
                 raise ValueError("Error with Solve engine : problem solving failed")
             elif se_status == SEStatusCode.TIMEOUT:
-                raise ValueError("Error with Solve engine : the time limit (10min by default) has been reached before solving the problem")
+                raise ValueError("".join(["Error with Solve engine :",
+                                          " the time limit (10min by default)",
+                                          " has been reached before solving the problem"]))
             elif se_status == SEStatusCode.STOPPED:
                 raise ValueError("Error with Solve engine : the job has been manually cancelled")
             
-            #todo think about adding a superficial timeout option for models
-            time.sleep(1)
+            time.sleep(self.sleep_time)
             sec_cnt += 1
         return se_status
 
@@ -102,8 +118,11 @@ class GrpcConnection(BaseConnection):
         """asks Solveengine the results of the problem"""
         LOGGER.debug("Getting results...")
         
-        resp_obj = self._solve_engine.GetResults(JobRequest(id=self._id),
-                                                 metadata=self._grpc_metadata)
+        try:
+            resp_obj = self._solve_engine.GetResults(JobRequest(id=self._id),
+                                                 metadata=self.__grpc_metadata)
+        except grpc.RpcError as err:
+            raise grpc.RpcError(err.details())
 
         if unusual_answer(resp_obj, SERequests.GET_RESULT):
             raise ValueError(build_err_msg(resp_obj))
@@ -115,17 +134,19 @@ class GrpcConnection(BaseConnection):
         
         return result
 
+
 class HttpConnection(BaseConnection):
-    def __init__(self, model):
-        self.model = model
-        self._headers = {"Authorization": "api-key {}".format(self._token)}
+    def __init__(self, model, token, sleep_time):
+        super(HttpConnection, self).__init__(model=model,
+                                             sleep_time=sleep_time)
+        self.__headers = {"Authorization": "api-key {}".format(token)}
     
     def _create_job(self):
         """create a job by sending the problem to Solveengine
         return the id of the 'job' created in the solve engine network
         """
         LOGGER.debug("Creating Solve Engine job...")
-        pb_data = self.model.get_file_str().encode('ascii')
+        pb_data = self.model.build_str_model().encode('ascii')
 
         pb_data = b64.b64encode(pb_data).decode('utf-8')
 
@@ -163,21 +184,22 @@ class HttpConnection(BaseConnection):
             se_status = solution.job_status
             
             msg = "".join(["Solving the problem, status : ", se_status,
-                           " - waiting time : ", str(sec_cnt),"s"])
+                           " - waiting time : ", str(sec_cnt), "s"])
             LOGGER.debug(msg)
-            self.model.print_if_interactive("".join(["\r" * (len(msg) * 2), msg, " " * 20]))
+            self.model.print_if_interactive(msg)
             
             if se_status == SEStatusCode.COMPLETED:
                 break
             elif se_status == SEStatusCode.FAILED:
                 raise ValueError("Error with Solve engine : problem solving failed")
             elif se_status == SEStatusCode.TIMEOUT:
-                raise ValueError("Error with Solve engine : the time limit (10min by default) has been reached before solving the problem")
+                raise ValueError("".join(["Error with Solve engine :",
+                                          " the time limit (10min by default)",
+                                          " has been reached before solving the problem"]))
             elif se_status == SEStatusCode.STOPPED:
                 raise ValueError("Error with Solve engine : the job has been manually cancelled")
-            
-            #todo think about adding a superficial timeout option for models
-            time.sleep(1)
+
+            time.sleep(self.sleep_time)
             sec_cnt += 1
         return se_status
 
@@ -201,7 +223,11 @@ class HttpConnection(BaseConnection):
         url = "".join([SE_URL_HTTP,
                        "".join([self._id, "/"]) if with_job_id else "",
                        str(path) if path else ""])
-        result = getattr(requests, msgtype)(url, headers=self._headers, **kwargs)
+        try:
+            result = getattr(requests, msgtype)(url, headers=self.__headers, **kwargs)
+        except requests.RequestException as err:
+            raise requests.RequestException(err.response)
+
         LOGGER.debug("request result: " + result.text)
         result.raise_for_status()
         return result.json()
