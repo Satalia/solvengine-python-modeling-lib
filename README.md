@@ -24,6 +24,8 @@ Python library for Solve Engine
 > Download the folder directly from github, get the path for the file requirements.txt and use:
 >> pip install -r '/path/to/requirements.txt'
 
+> **If installing for python version previous than 3**, make sure to install enum
+>> pip install enum
 
 ### **MAIN METHODS**
 > ####**Models** 
