@@ -218,7 +218,7 @@ if model.se_status == SEStatusCode.COMPLETED:
         print("z3=", z3.value)
         
         #or
-        for key, value in model.variables:
+        for key, value in model.var_results:
             print(key, "=", value)
             
         #print summary
